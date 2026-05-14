@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>历史记录 · 飞机智能设计平台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9C%88%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.tailwindcss.com/3.4.0"></script>
+<script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; background: #f8fafc; }
+  .card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- 顶部导航 -->
+  <nav class="bg-white border-b sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-8">
+        <a href="/" class="flex items-center gap-2">
+          <span class="text-2xl">✈️</span>
+          <span class="font-bold text-slate-800">飞机智能设计平台</span>
+        </a>
+        <div class="flex gap-1">
+          <a href="/"        class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100 rounded">🎯 设计</a>
+          <a href="/history" class="px-3 py-1 text-sm text-slate-800 bg-slate-100 rounded font-medium">📜 历史记录</a>
+          <a href="/admin"   class="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100 rounded">🛠️ 管理后台</a>
+        </div>
+      </div>
+      <form method="POST" action="/logout" class="m-0">
+        <button class="text-xs text-slate-500 hover:text-rose-600 transition">退出登录 →</button>
+      </form>
+    </div>
+  </nav>
+
+  <!-- 主体 -->
+  <div class="max-w-7xl mx-auto px-6 py-6">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-800">📜 团队设计历史</h1>
+        <p class="text-xs text-slate-500 mt-1">所有团队成员的设计记录, 按时间倒序</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-slate-500">共 {{ runs.length }} 条记录</span>
+        <button @click="refresh" class="text-xs px-3 py-1.5 border rounded hover:bg-slate-50">
+          ⟳ 刷新
+        </button>
+      </div>
+    </div>
+
+    <!-- 加载中 -->
+    <div v-if="loading" class="card p-12 text-center text-slate-500">
+      <div class="text-3xl mb-2">⏳</div>
+      <div>加载中...</div>
+    </div>
+
+    <!-- 空状态 -->
+    <div v-else-if="runs.length === 0" class="card p-12 text-center text-slate-400">
+      <div class="text-5xl mb-3">📭</div>
+      <div class="text-sm">还没有设计记录</div>
+      <a href="/" class="inline-block mt-4 text-blue-600 hover:underline text-sm">
+        → 去启动第一次设计
+      </a>
+    </div>
+
+    <!-- 列表 -->
+    <div v-else class="space-y-2">
+      <div v-for="r in runs" :key="r.run_id"
+           class="card p-4 hover:border-blue-300 hover:shadow-sm transition cursor-pointer"
+           @click="goRun(r.run_id)">
+        <div class="flex items-start justify-between">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-2">
+              <span :class="statusBadge(r.status)" class="px-2 py-0.5 rounded text-xs font-medium">
+                {{ statusIcon(r.status) }} {{ statusText(r.status) }}
+              </span>
+              <code class="text-xs text-slate-500 truncate">{{ r.run_id }}</code>
+            </div>
+            <div class="text-sm text-slate-700 mb-1">
+              <span class="font-medium">{{ formSummary(r.form_data) }}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs text-slate-500">
+              <span>📅 {{ formatTime(r.created_at) }}</span>
+              <span v-if="r.finished_at && r.started_at">⏱️ {{ duration(r) }}</span>
+              <span>📄 {{ reportTypeName(r.form_data) }}</span>
+            </div>
+          </div>
+          <div class="text-slate-400 ml-3 text-sm shrink-0">→</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, onMounted } = Vue;
+
+createApp({
+  setup() {
+    const runs = ref([]);
+    const loading = ref(true);
+
+    async function refresh() {
+      loading.value = true;
+      try {
+        const resp = await fetch('/api/design/list?limit=200');
+        if (resp.status === 401) { location.href = '/login'; return; }
+        const data = await resp.json();
+        runs.value = data.runs || [];
+      } catch (e) {
+        console.error(e);
+      } finally {
+        loading.value = false;
+      }
+    }
+
+    function goRun(rid) {
+      // 跳到主页面带上 run_id (主页会自动加载该 run 的结果)
+      location.href = '/?run_id=' + encodeURIComponent(rid);
+    }
+
+    function statusBadge(s) {
+      return {
+        'success': 'bg-emerald-100 text-emerald-700',
+        'running': 'bg-blue-100 text-blue-700',
+        'error':   'bg-rose-100 text-rose-700',
+        'pending': 'bg-slate-100 text-slate-600',
+      }[s] || 'bg-slate-100 text-slate-600';
+    }
+    function statusIcon(s) {
+      return { success: '✓', running: '⏳', error: '✗', pending: '○' }[s] || '○';
+    }
+    function statusText(s) {
+      return { success: '完成', running: '进行中', error: '失败', pending: '待执行' }[s] || s;
+    }
+
+    function formSummary(formData) {
+      if (!formData) return '(无数据)';
+      try {
+        const f = typeof formData === 'string' ? JSON.parse(formData) : formData;
+        const seats = f.seats || '?';
+        const range = f.range_km || '?';
+        const cls   = f.aircraft_class || '-';
+        return `${seats} 座 · ${range} km · ${cls}`;
+      } catch (e) {
+        return '(数据解析失败)';
+      }
+    }
+
+    function reportTypeName(formData) {
+      if (!formData) return '总体设计';
+      try {
+        const f = typeof formData === 'string' ? JSON.parse(formData) : formData;
+        return f.report_type === 'propulsion' ? '电推进专题' : '总体设计';
+      } catch (e) { return '总体设计'; }
+    }
+
+    function formatTime(t) {
+      if (!t) return '-';
+      const d = new Date(t * 1000);
+      const now = new Date();
+      const diff = (now - d) / 1000;
+      if (diff < 60)    return Math.round(diff) + ' 秒前';
+      if (diff < 3600)  return Math.round(diff / 60) + ' 分钟前';
+      if (diff < 86400) return Math.round(diff / 3600) + ' 小时前';
+      return d.toLocaleString('zh-CN', { year:'numeric', month:'2-digit', day:'2-digit',
+                                          hour:'2-digit', minute:'2-digit' });
+    }
+
+    function duration(r) {
+      if (!r.started_at || !r.finished_at) return '';
+      const s = Math.round(r.finished_at - r.started_at);
+      if (s < 60) return s + 's';
+      return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+    }
+
+    onMounted(refresh);
+
+    return { runs, loading, refresh, goRun,
+             statusBadge, statusIcon, statusText,
+             formSummary, reportTypeName, formatTime, duration };
+  }
+}).mount('#app');
+</script>
+
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 飞机智能设计平台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9C%88%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.tailwindcss.com/3.4.0"></script>
+<style>
+  body {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .glass {
+    background: rgba(30, 41, 59, 0.5);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  }
+  .gold {
+    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  }
+  .gold:hover {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  }
+  input:focus {
+    border-color: #fbbf24 !important;
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+  }
+  .stars {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .star {
+    position: absolute;
+    background: rgba(255,255,255,0.5);
+    border-radius: 50%;
+    animation: twinkle 3s ease-in-out infinite;
+  }
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+  }
+</style>
+</head>
+<body class="text-slate-100">
+
+<div class="stars" id="stars"></div>
+
+<div class="glass rounded-2xl p-10 w-full max-w-sm relative z-10">
+  <!-- Logo -->
+  <div class="text-center mb-8">
+    <div class="text-6xl mb-3">✈️</div>
+    <h1 class="text-xl font-bold tracking-wide">飞机智能设计平台</h1>
+    <p class="text-xs text-slate-400 mt-2">CE-25A · L3 端到端 AI Agent</p>
+  </div>
+
+  <!-- 错误提示 (登录失败时显示) -->
+  <div id="error" class="hidden mb-4 px-4 py-2 bg-rose-900/40 border border-rose-700/50 rounded text-rose-300 text-xs">
+    密码不正确, 请重试
+  </div>
+
+  <!-- 表单 -->
+  <form method="POST" action="/login">
+    <div class="mb-5">
+      <label class="text-xs text-slate-400 block mb-2">团队访问密码</label>
+      <input type="password" name="password" required autofocus
+             class="w-full bg-slate-900/60 border border-slate-700 rounded px-3 py-2.5 text-sm outline-none transition"
+             placeholder="请输入密码">
+    </div>
+
+    <button type="submit"
+            class="gold w-full py-2.5 rounded text-sm font-semibold text-slate-900 transition shadow-lg">
+      登录
+    </button>
+  </form>
+
+  <p class="text-xs text-slate-500 text-center mt-6 leading-relaxed">
+    团队共享账号 · 密码联系管理员<br>
+    <span class="text-slate-600">© 中国商飞 CE-25A 智能设计项目</span>
+  </p>
+</div>
+
+<script>
+  // 检查 URL 里是否有 error=1
+  if (new URLSearchParams(location.search).get('error') === '1') {
+    document.getElementById('error').classList.remove('hidden');
+  }
+
+  // 生成星星背景
+  const stars = document.getElementById('stars');
+  for (let i = 0; i < 40; i++) {
+    const s = document.createElement('div');
+    s.className = 'star';
+    const size = Math.random() * 2 + 1;
+    s.style.width = size + 'px';
+    s.style.height = size + 'px';
+    s.style.left = Math.random() * 100 + '%';
+    s.style.top = Math.random() * 100 + '%';
+    s.style.animationDelay = Math.random() * 3 + 's';
+    stars.appendChild(s);
+  }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1787 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>飞机智能设计平台 · 可视化版</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9C%88%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+  // OrbitControls 加载失败时的备用源 (Three.js r128 在 jsdelivr/cdnjs/unpkg 都有)
+  setTimeout(() => {
+    if (typeof THREE !== 'undefined' && !THREE.OrbitControls) {
+      console.warn('[CDN] OrbitControls 主源加载失败, 切换 cdnjs 备用源');
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+      // r128 有 OrbitControls 内置在 cdnjs, 但单文件没有, 用 unpkg
+      const s2 = document.createElement('script');
+      s2.src = 'https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js';
+      document.head.appendChild(s2);
+    }
+  }, 1500);
+</script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+  /* 进度条 */
+  .stage-pip { transition: all 0.3s; }
+  .stage-pending  { background: #f1f5f9; color: #64748b; }
+  .stage-running  { background: #dbeafe; color: #1d4ed8; animation: pulse 1.5s infinite; }
+  .stage-done     { background: #dcfce7; color: #15803d; }
+  .stage-error    { background: #fee2e2; color: #b91c1c; }
+  @keyframes pulse { 50% { opacity: 0.55; } }
+
+  /* 流程图 SVG 脉动 (running 大块) */
+  .flow-pulse { animation: flow-pulse 2s ease-in-out infinite; }
+  @keyframes flow-pulse {
+    0%, 100% { filter: drop-shadow(0 0 0 rgba(59, 130, 246, 0)); }
+    50%      { filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.5)); }
+  }
+
+  /* 3D 视窗 */
+  #viewer-3d {
+    background: linear-gradient(180deg, #e0f2fe 0%, #f0f9ff 50%, #f1f5f9 100%);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    cursor: grab;
+  }
+  #viewer-3d:active { cursor: grabbing; }
+  #viewer-3d canvas { display: block; }
+
+  /* 卡片 */
+  .data-card {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.5rem;
+    padding: 16px;
+    transition: box-shadow 0.2s;
+  }
+  .data-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+
+  .stat-num {
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.1;
+  }
+  .stat-unit { font-size: 0.875rem; color: #64748b; margin-left: 4px; }
+  .stat-label { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+
+  /* 阻力极曲线 mini chart */
+  .polar-chart { width: 100%; height: 120px; }
+
+  /* 重量饼图 */
+  .pie-chart svg { width: 100%; height: 180px; }
+
+  /* 任务剖面条 */
+  .mission-bar { display: flex; height: 32px; border-radius: 4px; overflow: hidden; }
+  .mission-seg-climb   { background: #fbbf24; }
+  .mission-seg-cruise  { background: #3b82f6; }
+  .mission-seg-descent { background: #94a3b8; }
+
+  /* 折叠区 */
+  details summary { cursor: pointer; user-select: none; }
+  details summary::-webkit-details-marker { display: none; }
+
+  /* 自诊断错误 */
+  .diag-box {
+    max-width: 700px; margin: 4rem auto; padding: 2rem;
+    background: #fef2f2; border-left: 4px solid #dc2626;
+    border-radius: 0.5rem;
+  }
+
+  /* 事件流(精简版) */
+  .event-line {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 6px;
+    color: #64748b;
+  }
+  .event-line.tool    { border-color: #3b82f6; color: #1e40af; }
+  .event-line.error   { border-color: #dc2626; color: #b91c1c; }
+  .event-line.finish  { border-color: #16a34a; color: #15803d; }
+
+  .chat-panel { height: calc(100vh - 220px); }
+</style>
+</head>
+<body class="bg-slate-50">
+
+<div id="app" class="min-h-screen flex flex-col">
+
+  <!-- ════════ Header ════════ -->
+  <header class="bg-white border-b px-6 py-3 flex items-center justify-between sticky top-0 z-10">
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">✈️</span>
+        <div>
+          <h1 class="text-lg font-semibold">飞机智能设计平台</h1>
+          <p class="text-xs text-slate-500">AI Agent 自动调度 · 3D 可视化输出</p>
+        </div>
+      </div>
+      <nav class="flex gap-1 ml-6">
+        <a href="/"        class="px-3 py-1.5 text-sm text-slate-800 bg-slate-100 rounded font-medium">🎯 设计</a>
+        <a href="/history" class="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded">📜 历史记录</a>
+        <a href="/admin"   class="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded">🛠️ 管理后台</a>
+      </nav>
+    </div>
+    <div class="flex gap-2 text-xs items-center">
+      <span :class="redisBadge" class="px-2 py-1 rounded">Redis</span>
+      <span :class="skillBadge" class="px-2 py-1 rounded">{{ skillStatus }}</span>
+      <span class="bg-slate-100 text-slate-600 px-2 py-1 rounded">{{ health.model || '...' }}</span>
+      <form method="POST" action="/logout" class="m-0 ml-2">
+        <button type="submit" class="text-xs text-slate-400 hover:text-rose-600 transition px-2">
+          退出 →
+        </button>
+      </form>
+    </div>
+  </header>
+
+  <!-- ════════ 进度条 (sticky) ════════ -->
+  <div class="bg-white border-b px-6 py-3 sticky top-[64px] z-10">
+    <div class="max-w-7xl mx-auto grid grid-cols-6 gap-2">
+      <div v-for="s in stages" :key="s.tool" class="text-center">
+        <div :class="['stage-pip rounded-lg py-2', stageClass(s.tool)]">
+          <div class="text-xl">{{ stageIcon(s.tool) }}</div>
+          <div class="text-xs font-medium mt-0.5">{{ s.name }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ 主内容 ════════ -->
+  <main class="flex-1 px-6 py-6 max-w-7xl mx-auto w-full">
+
+    <!-- 设计需求表单 (折叠到 details) -->
+    <details :open="!runId" class="mb-4 bg-white rounded-lg border">
+      <summary class="px-5 py-3 flex items-center justify-between">
+        <span class="font-medium text-sm">⚙️ 设计需求</span>
+        <span v-if="!runId" class="text-xs text-slate-400">点击折叠</span>
+        <span v-else class="text-xs text-slate-500">{{ designSnapshot }}</span>
+      </summary>
+
+      <!-- Tab 切换 -->
+      <div class="px-5 pt-2 flex gap-1 border-b">
+        <button @click="inputTab = 'form'"
+                :class="inputTab === 'form' ? 'text-slate-800 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-700'"
+                class="px-4 py-2 text-sm font-medium transition -mb-px">
+          📝 表单输入
+        </button>
+        <button @click="inputTab = 'chat'"
+                :class="inputTab === 'chat' ? 'text-slate-800 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-700'"
+                class="px-4 py-2 text-sm font-medium transition -mb-px">
+          💬 AI 对话 <span class="text-xs text-blue-500 ml-1">推荐</span>
+        </button>
+      </div>
+
+      <!-- Tab 1: 表单 -->
+      <div v-show="inputTab === 'form'" class="px-5 pb-5 pt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">机型</label>
+          <select v-model="form.aircraft_class" class="w-full border rounded px-3 py-2 text-sm">
+            <option value="electric-regional">电动支线 (CE-25A)</option>
+            <option value="subsonic-narrow">亚音速窄体</option>
+            <option value="subsonic-wide">亚音速宽体</option>
+            <option value="supersonic">超声速</option>
+            <option value="regional">支线 (传统)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">座位数</label>
+          <input v-model.number="form.seats" type="number" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">航程 (km)</label>
+          <input v-model.number="form.range_km" type="number" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">巡航马赫</label>
+          <input v-model.number="form.cruise_mach" type="number" step="0.01" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">巡航高度 (m)</label>
+          <input v-model.number="form.cruise_alt_m" type="number" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">最大翼展 (m)</label>
+          <input v-model.number="form.max_wingspan_m" type="number" step="0.1" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">电池 (kWh)</label>
+          <input v-model.number="form.battery_kwh" type="number" placeholder="电动机型用" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600">📄 报告类型</label>
+          <select v-model="form.report_type" class="w-full border rounded px-3 py-2 text-sm bg-white">
+            <option value="design">总体设计报告 (默认)</option>
+            <option value="propulsion">电推进专题报告</option>
+          </select>
+        </div>
+        <div class="md:col-span-2">
+          <label class="block text-xs font-medium mb-1 text-slate-600">额外要求</label>
+          <input v-model="form.extra" type="text" placeholder="例: 重视续航" class="w-full border rounded px-3 py-2 text-sm">
+        </div>
+        <div class="md:col-span-3 flex gap-2">
+          <button @click="startDesign" :disabled="planLoading"
+                  class="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-medium py-2.5 rounded text-sm">
+            {{ planLoading ? '⏳ 设计中...' : '🚀 启动 AI 设计' }}
+          </button>
+          <button v-if="runId && finalStatus" @click="resetAll"
+                  class="px-4 border border-slate-300 hover:bg-slate-50 rounded text-sm">
+            ↻ 新设计
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab 2: AI 对话 -->
+      <div v-show="inputTab === 'chat'" class="px-5 pb-5 pt-4">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+          <!-- 对话主体 (2/3 宽) -->
+          <div class="lg:col-span-2">
+            <div ref="chatMessages"
+                 class="h-96 overflow-y-auto bg-slate-50 border rounded-lg p-4 space-y-3 mb-3">
+              <!-- 欢迎/引导提示 -->
+              <div v-if="chat.messages.length === 0" class="text-center text-slate-400 text-sm py-8">
+                <div class="text-4xl mb-3">💬</div>
+                <div>点下方"开始对话"或直接输入第一句话</div>
+                <div class="text-xs mt-2">AI 会引导你完成所有需求收集</div>
+              </div>
+
+              <!-- 消息列表 -->
+              <div v-for="(msg, i) in chat.messages" :key="i"
+                   :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+                <div :class="msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-white border'"
+                     class="max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap">
+                  {{ msg.content }}
+                </div>
+              </div>
+
+              <!-- AI 思考中 -->
+              <div v-if="chat.loading" class="flex justify-start">
+                <div class="bg-white border rounded-2xl px-4 py-2.5 text-sm text-slate-400">
+                  <span class="inline-block animate-pulse">💭 AI 思考中...</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 输入区 -->
+            <div class="flex items-center gap-2">
+              <button v-if="!chat.recording"
+                      @click="startVoiceInput"
+                      :disabled="chat.loading || !speechSupported"
+                      :title="speechSupported ? '点击说话' : '浏览器不支持语音 (Chrome/Edge 可用)'"
+                      class="w-10 h-10 flex items-center justify-center rounded-full border hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed">
+                🎤
+              </button>
+              <button v-else
+                      @click="stopVoiceInput"
+                      class="w-10 h-10 flex items-center justify-center rounded-full bg-rose-500 text-white animate-pulse">
+                ⏹
+              </button>
+
+              <input v-model="chat.input"
+                     @keyup.enter="sendChatMessage"
+                     :disabled="chat.loading"
+                     :placeholder="chat.recording ? '正在听...' : (chat.messages.length === 0 ? '描述一下你想做的飞机, 或点 🎤 说话' : '继续...')"
+                     type="text"
+                     class="flex-1 border rounded-full px-4 py-2 text-sm outline-none focus:border-blue-400">
+
+              <button @click="sendChatMessage"
+                      :disabled="chat.loading || !chat.input.trim()"
+                      class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-full text-sm">
+                {{ chat.messages.length === 0 ? '开始对话' : '发送' }}
+              </button>
+            </div>
+
+            <!-- 语音提示 + 重置 -->
+            <div class="flex justify-between items-center mt-2 px-1">
+              <span class="text-xs text-slate-400">
+                <span v-if="chat.recording" class="text-rose-500">🔴 录音中, 说完再点 ⏹</span>
+                <span v-else-if="!speechSupported">⚠️ 语音功能需要 Chrome/Edge + HTTPS</span>
+                <span v-else>提示: 麦克风识别完会自动填入输入框, 可以编辑后再发送</span>
+              </span>
+              <button v-if="chat.messages.length > 0" @click="resetChat"
+                      class="text-xs text-slate-400 hover:text-rose-500">
+                ↻ 重新开始
+              </button>
+            </div>
+          </div>
+
+          <!-- 右侧侧栏: 已收集参数 (1/3 宽) -->
+          <div class="bg-slate-50 border rounded-lg p-4">
+            <h4 class="text-sm font-semibold mb-3 flex items-center gap-2">
+              📋 已收集参数
+              <span class="text-xs text-slate-400">{{ Object.keys(chat.extracted).length }}/7</span>
+            </h4>
+
+            <div v-if="Object.keys(chat.extracted).length === 0" class="text-xs text-slate-400 py-4">
+              暂无 (跟 AI 对话后会自动填充)
+            </div>
+
+            <ul v-else class="space-y-2 text-xs">
+              <li v-for="(field, key) in chatFieldLabels" :key="key" class="flex items-start gap-2">
+                <span :class="chat.extracted[key] !== undefined ? 'text-emerald-500' : 'text-slate-300'" class="mt-0.5">
+                  {{ chat.extracted[key] !== undefined ? '✓' : '○' }}
+                </span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-slate-500">{{ field }}</div>
+                  <div class="text-slate-900 font-mono truncate" v-if="chat.extracted[key] !== undefined">
+                    {{ chat.extracted[key] }}
+                  </div>
+                </div>
+              </li>
+            </ul>
+
+            <!-- 启动按钮 -->
+            <div class="mt-4 pt-4 border-t">
+              <button v-if="chat.is_ready"
+                      @click="startDesignFromChat"
+                      :disabled="planLoading"
+                      class="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white py-2 rounded text-sm font-medium">
+                {{ planLoading ? '⏳ 启动中...' : '🚀 启动 AI 设计' }}
+              </button>
+              <div v-else class="text-xs text-slate-400 text-center py-1">
+                <span v-if="chat.messages.length === 0">先开始对话</span>
+                <span v-else-if="chat.missing.length > 0">还缺 {{ chat.missing.length }} 个字段</span>
+                <span v-else>等 AI 确认...</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </details>
+
+    <!-- ════════ 主区: 3D 视图 + 关键指标 ════════ -->
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4 mb-4">
+
+      <!-- 3D 飞机视图 -->
+      <div class="lg:col-span-3 data-card p-2 relative">
+        <div class="absolute top-3 left-4 z-10 text-xs text-slate-500 bg-white/70 px-2 py-1 rounded">
+          🛩️ 3D 飞机外形
+          <span v-if="aircraftReady" class="text-emerald-600">· 拖动旋转 · 滚轮缩放</span>
+          <span v-else class="text-slate-400">· AI 设计完成后自动生成</span>
+        </div>
+        <button v-if="aircraftReady" @click="toggleAutoRotate"
+                class="absolute top-3 right-4 z-10 text-xs bg-white/70 hover:bg-white px-2 py-1 rounded border"
+                :class="autoRotateOn ? 'border-blue-500 text-blue-600' : 'border-slate-300 text-slate-500'">
+          {{ autoRotateOn ? '⏸ 停止旋转' : '🔄 自动旋转' }}
+        </button>
+        <div id="viewer-3d" style="width: 100%; height: 420px;"></div>
+
+        <!-- 占位提示 (飞机未生成时显示) -->
+        <div v-if="!aircraftReady"
+             class="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div class="text-center">
+            <div class="text-6xl mb-3 opacity-30">✈️</div>
+            <div class="text-sm text-slate-400">填写需求后启动 AI 设计</div>
+            <div class="text-xs text-slate-300 mt-1">3D 飞机模型将根据计算结果自动生成</div>
+          </div>
+        </div>
+
+        <div v-if="aircraftReady && reqResult" class="absolute bottom-3 right-4 z-10 text-xs bg-white/80 px-3 py-1.5 rounded">
+          翼展 {{ aircraftDisplay.wingspan }} m · 机身长 {{ aircraftDisplay.fuse_length }} m
+        </div>
+      </div>
+
+      <!-- 关键指标卡 -->
+      <div class="lg:col-span-2 grid grid-cols-2 gap-3">
+        <div class="data-card text-center">
+          <div class="text-3xl">⚖️</div>
+          <div class="stat-num text-blue-700">{{ kpiMTOW }}</div>
+          <div class="stat-unit">kg</div>
+          <div class="stat-label">最大起飞重量</div>
+        </div>
+        <div class="data-card text-center">
+          <div class="text-3xl">📐</div>
+          <div class="stat-num text-emerald-700">{{ kpiLD }}</div>
+          <div class="stat-label">巡航升阻比 L/D</div>
+        </div>
+        <div class="data-card text-center">
+          <div class="text-3xl">🌍</div>
+          <div class="stat-num text-amber-700">{{ kpiRange }}</div>
+          <div class="stat-unit">km</div>
+          <div class="stat-label">估算续航</div>
+        </div>
+        <div class="data-card text-center">
+          <div class="text-3xl">⚡</div>
+          <div class="stat-num text-purple-700">{{ kpiPower }}</div>
+          <div class="stat-unit">kW</div>
+          <div class="stat-label">巡航功率</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════ 智能设计流程图 (原图背景 + 高亮覆盖) ════════ -->
+    <div class="data-card mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium flex items-center gap-2">
+          <span class="text-lg">🗺️</span>
+          <span>智能设计流程图 · CE-25A 设计架构</span>
+          <span class="text-xs text-slate-400 ml-2">AI 跑到哪里, 图上对应区域就点亮</span>
+        </h3>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-500 mr-2">
+            完成 {{ doneCount }} / {{ flowStages.length }}
+          </span>
+          <button @click="flowZoomFit" class="text-xs px-2 py-1 border rounded hover:bg-slate-50" title="适配宽度">⤢ 适配</button>
+          <button @click="flowZoomIn"  class="text-xs px-2 py-1 border rounded hover:bg-slate-50" title="放大">＋</button>
+          <button @click="flowZoomOut" class="text-xs px-2 py-1 border rounded hover:bg-slate-50" title="缩小">－</button>
+          <button @click="flowZoom100" class="text-xs px-2 py-1 border rounded hover:bg-slate-50" title="100%">1:1</button>
+        </div>
+      </div>
+
+      <!-- 滚动+缩放容器 -->
+      <div ref="flowContainer" class="relative bg-slate-50 border rounded overflow-auto"
+           style="height: 700px; cursor: grab;"
+           @mousedown="flowDragStart" @mousemove="flowDragMove" @mouseup="flowDragEnd" @mouseleave="flowDragEnd"
+           @wheel.prevent="flowWheel">
+        <!-- 内层 wrapper: 尺寸 = 原图 × 缩放, img 和 svg 都铺满它 -->
+        <div :style="`position: relative; width: ${FLOW_W * flowZoom}px; height: ${FLOW_H * flowZoom}px;`">
+          <!-- HTML img 做背景 (浏览器原生缩放, 不会出 SVG <image> 的怪问题) -->
+          <img src="/flow_chart.jpg" alt="设计架构图" draggable="false"
+               style="display: block; width: 100%; height: 100%; user-select: none;">
+
+          <!-- SVG 浮在 img 上, 只画高亮覆盖 -->
+          <svg :viewBox="`0 0 ${FLOW_W} ${FLOW_H}`"
+               style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"
+               xmlns="http://www.w3.org/2000/svg"
+               preserveAspectRatio="none">
+            <defs>
+              <filter id="hl-glow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="12" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            <!-- 5 个工具高亮覆盖 -->
+            <g v-for="hl in flowHighlights" :key="hl.tool">
+              <!-- 发光底层 (running 状态有动画) -->
+              <rect v-if="stageStates[hl.tool] === 'running' || stageStates[hl.tool] === 'done'"
+                    :x="hl.x" :y="hl.y" :width="hl.w" :height="hl.h" rx="20"
+                    :fill="stageStates[hl.tool] === 'done' ? '#16a34a' : '#3b82f6'"
+                    :opacity="stageStates[hl.tool] === 'done' ? 0.18 : 0.28"
+                    filter="url(#hl-glow)"
+                    :class="{ 'flow-pulse': stageStates[hl.tool] === 'running' }"/>
+              <!-- 边框 -->
+              <rect :x="hl.x" :y="hl.y" :width="hl.w" :height="hl.h" rx="14"
+                    fill="none"
+                    :stroke="hlBorderColor(hl.tool)"
+                    :stroke-width="stageStates[hl.tool] ? 6 : 3"
+                    :stroke-dasharray="stageStates[hl.tool] ? '0' : '12 8'"
+                    opacity="0.85"/>
+              <!-- 状态标签 (右上角) -->
+              <g v-if="stageStates[hl.tool]" :transform="`translate(${hl.x + hl.w - 8}, ${hl.y + 8})`">
+                <rect x="-180" y="0" width="180" height="40" rx="6"
+                      :fill="hlBorderColor(hl.tool)" opacity="0.95"/>
+                <text x="-90" y="28" text-anchor="middle" font-size="22" font-weight="600" fill="white">
+                  {{ hlBadgeText(hl.tool) }}
+                </text>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <!-- 图例 + 提示 -->
+      <div class="flex justify-between items-center text-xs mt-2 text-slate-600">
+        <div class="flex gap-3">
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm" style="background:#22c55e"></span> 已完成</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm" style="background:#3b82f6"></span> 进行中</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm" style="background:#dc2626"></span> 失败</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm border border-dashed border-slate-400"></span> 待执行</span>
+        </div>
+        <span class="text-slate-400">滚轮缩放 · 拖动平移 · 缩放 {{ Math.round(flowZoom * 100) }}%</span>
+      </div>
+    </div>
+
+    <!-- ════════ 详细数据卡片 (5 张) ════════ -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+      <!-- 几何参数 -->
+      <div v-if="reqResult" class="data-card">
+        <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+          <span class="text-lg">🛩️</span>
+          <span>几何参数</span>
+          <span class="ml-auto text-xs text-slate-400">需求处理</span>
+        </h3>
+        <div class="grid grid-cols-3 gap-3 text-center">
+          <div>
+            <div class="stat-num text-slate-800">{{ fmt(geomData.max_wingspan_m, 1) }}<span class="stat-unit">m</span></div>
+            <div class="stat-label">翼展</div>
+          </div>
+          <div>
+            <div class="stat-num text-slate-800">{{ fmt(geomData.wing_area_m2, 1) }}<span class="stat-unit">m²</span></div>
+            <div class="stat-label">翼面积</div>
+          </div>
+          <div>
+            <div class="stat-num text-slate-800">{{ fmt(geomData.aspect_ratio, 1) }}</div>
+            <div class="stat-label">展弦比</div>
+          </div>
+        </div>
+        <div class="border-t pt-3 mt-4 grid grid-cols-2 gap-2 text-xs text-slate-600">
+          <div>座位数 <b>{{ missData.seats }}</b></div>
+          <div>设计航程 <b>{{ missData.range_km }}</b> km</div>
+          <div>巡航 Mach <b>{{ missData.cruise_mach }}</b></div>
+          <div>巡航高度 <b>{{ missData.cruise_alt_m }}</b> m</div>
+        </div>
+      </div>
+
+      <!-- 气动性能 -->
+      <div v-if="aerResult" class="data-card">
+        <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+          <span class="text-lg">🌬️</span>
+          <span>气动性能</span>
+          <span class="ml-auto text-xs text-slate-400">气动分析</span>
+        </h3>
+        <div class="grid grid-cols-3 gap-3 text-center mb-3">
+          <div>
+            <div class="stat-num text-emerald-700">{{ fmt(aerData.cruise_point.CL, 3) }}</div>
+            <div class="stat-label">巡航 CL</div>
+          </div>
+          <div>
+            <div class="stat-num text-rose-700">{{ fmt(aerData.cruise_point.CD, 4) }}</div>
+            <div class="stat-label">巡航 CD</div>
+          </div>
+          <div>
+            <div class="stat-num text-blue-700">{{ fmt(aerData.cruise_point.L_over_D, 1) }}</div>
+            <div class="stat-label">升阻比</div>
+          </div>
+        </div>
+        <!-- 阻力极曲线 mini -->
+        <div class="bg-slate-50 rounded p-2">
+          <div class="text-xs text-slate-500 mb-1">阻力极曲线 (CL vs CD)</div>
+          <svg class="polar-chart" :viewBox="polarSvg.viewBox" preserveAspectRatio="none">
+            <polyline :points="polarSvg.points" fill="none" stroke="#3b82f6" stroke-width="2" />
+            <circle v-for="p in polarSvg.dots" :key="p.label"
+                    :cx="p.x" :cy="p.y" r="3" fill="#1e40af" />
+          </svg>
+        </div>
+        <div class="text-xs text-slate-500 mt-2">
+          CD0 = {{ fmt(aerData.drag_breakdown.CD0, 4) }} · 最大 L/D = {{ fmt(aerData.max_L_D, 1) }}
+        </div>
+      </div>
+
+      <!-- 优化结果 -->
+      <div v-if="optResult" class="data-card">
+        <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+          <span class="text-lg">🎯</span>
+          <span>气动优化</span>
+          <span class="ml-auto text-xs text-slate-400">{{ optData.n_evaluations }} 次评估</span>
+        </h3>
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="bg-slate-50 rounded p-3">
+              <div class="text-xs text-slate-500 mb-1">优化前</div>
+              <div class="text-lg font-semibold">L/D = {{ fmt(optData.baseline.L_over_D, 1) }}</div>
+              <div class="text-xs text-slate-600">b={{ optData.baseline.wingspan_m }}m, AR={{ optData.baseline.aspect_ratio }}</div>
+            </div>
+            <div class="bg-emerald-50 rounded p-3">
+              <div class="text-xs text-emerald-600 mb-1">优化后</div>
+              <div class="text-lg font-semibold text-emerald-800">L/D = {{ fmt(optData.optimum.L_over_D, 1) }}</div>
+              <div class="text-xs text-emerald-700">b={{ optData.optimum.wingspan_m }}m, AR={{ optData.optimum.aspect_ratio }}</div>
+            </div>
+          </div>
+          <div class="text-center py-1">
+            <span class="text-xs text-slate-500">提升幅度</span>
+            <span class="text-lg font-semibold ml-2"
+                  :class="optData.improvement_pct > 0 ? 'text-emerald-600' : 'text-rose-600'">
+              {{ optData.improvement_pct > 0 ? '+' : '' }}{{ fmt(optData.improvement_pct, 1) }}%
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 重量分解 (饼图) -->
+      <div v-if="wtsResult" class="data-card">
+        <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+          <span class="text-lg">⚖️</span>
+          <span>重量分解</span>
+          <span class="ml-auto text-xs text-slate-400">{{ fmt(wtsData.summary_kg.takeoff_calc, 0) }} kg</span>
+        </h3>
+        <div class="grid grid-cols-5 gap-3 items-center">
+          <div class="col-span-2 pie-chart">
+            <svg viewBox="0 0 100 100">
+              <g v-for="(seg, i) in pieSegments" :key="i">
+                <path :d="seg.path" :fill="seg.color" />
+              </g>
+            </svg>
+          </div>
+          <div class="col-span-3 space-y-1.5 text-xs">
+            <div v-for="(seg, i) in pieSegments" :key="i" class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span :style="`background:${seg.color}`" class="w-3 h-3 rounded-sm inline-block"></span>
+                <span>{{ seg.label }}</span>
+              </div>
+              <span class="text-slate-600">{{ fmt(seg.value, 0) }} kg ({{ fmt(seg.pct, 1) }}%)</span>
+            </div>
+          </div>
+        </div>
+        <div class="border-t mt-3 pt-2 text-xs text-slate-500 flex justify-between">
+          <span>重量收敛偏差</span>
+          <span :class="Math.abs(wtsData.summary_kg.delta_pct) <= 15 ? 'text-emerald-600' : 'text-amber-600'">
+            {{ wtsData.summary_kg.delta_pct > 0 ? '+' : '' }}{{ fmt(wtsData.summary_kg.delta_pct, 1) }}%
+          </span>
+        </div>
+      </div>
+
+      <!-- 电推进 / 任务剖面 -->
+      <div v-if="propResult" class="data-card lg:col-span-2">
+        <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+          <span class="text-lg">⚡</span>
+          <span>电推进任务分析</span>
+          <span class="ml-auto text-xs"
+                :class="propData.range_margin_pct >= -5 ? 'text-emerald-600' : 'text-amber-600'">
+            续航裕度 {{ propData.range_margin_pct > 0 ? '+' : '' }}{{ fmt(propData.range_margin_pct, 1) }}%
+          </span>
+        </h3>
+
+        <div class="grid grid-cols-4 gap-3 mb-4">
+          <div class="text-center">
+            <div class="stat-num text-blue-700">{{ fmt(propData.estimated_range_km, 0) }}</div>
+            <div class="stat-label">实际续航 (km)</div>
+          </div>
+          <div class="text-center">
+            <div class="stat-num text-slate-700">{{ fmt(propData.design_range_km, 0) }}</div>
+            <div class="stat-label">设计航程 (km)</div>
+          </div>
+          <div v-if="propData.propulsion.cruise_power_kw" class="text-center">
+            <div class="stat-num text-purple-700">{{ fmt(propData.propulsion.cruise_power_kw, 0) }}</div>
+            <div class="stat-label">巡航功率 (kW)</div>
+          </div>
+          <div v-if="propData.propulsion.energy_consumption_wh_per_km" class="text-center">
+            <div class="stat-num text-amber-700">{{ fmt(propData.propulsion.energy_consumption_wh_per_km, 0) }}</div>
+            <div class="stat-label">能耗 (Wh/km)</div>
+          </div>
+        </div>
+
+        <!-- 任务剖面条 -->
+        <div v-if="missionSegments.length" class="mt-4">
+          <div class="text-xs text-slate-500 mb-2">任务剖面 (按时长比例)</div>
+          <div class="mission-bar mb-1">
+            <div v-for="(seg, i) in missionSegments" :key="i"
+                 :class="'mission-seg-' + seg.stage"
+                 :style="`width: ${seg.pct}%`"
+                 :title="`${seg.stage}: ${seg.duration_min} 分钟`">
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-xs text-slate-600">
+            <div v-for="seg in missionSegments" :key="seg.stage" class="text-center">
+              <div class="font-medium">
+                <span :class="`mission-seg-${seg.stage}`" class="inline-block w-2 h-2 rounded-full mr-1"></span>
+                {{ stageNameZh(seg.stage) }}
+              </div>
+              <div>{{ seg.duration_min }} min · {{ seg.power_kw }} kW</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 报告下载 (报告生成完成后才显示) -->
+    <div v-if="reportResult" class="mt-4 data-card">
+      <h3 class="text-sm font-medium mb-3 flex items-center gap-2">
+        <span class="text-lg">📄</span>
+        <span>{{ reportData.display_name || '设计报告' }}</span>
+        <span class="ml-auto text-xs text-emerald-600">
+          ✓ {{ reportData.n_placeholders_resolved }}/{{ reportData.n_placeholders_total }} 数据点已填充
+        </span>
+      </h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <a v-if="reportData.md_file" :href="reportFileUrl(reportData.md_filename)"
+           target="_blank"
+           class="block border rounded-lg p-4 hover:bg-slate-50 transition">
+          <div class="flex items-center gap-3">
+            <span class="text-3xl">📝</span>
+            <div class="flex-1">
+              <div class="font-medium text-sm">Markdown 版</div>
+              <div class="text-xs text-slate-500">{{ Math.round(reportData.md_size_bytes / 1024) }} KB · 可在线查看</div>
+            </div>
+            <span class="text-blue-600 text-sm">查看 →</span>
+          </div>
+        </a>
+        <a v-if="reportData.docx_file && reportData.docx_status === 'success'"
+           :href="reportFileUrl(reportData.docx_filename)"
+           class="block border rounded-lg p-4 hover:bg-slate-50 transition">
+          <div class="flex items-center gap-3">
+            <span class="text-3xl">📑</span>
+            <div class="flex-1">
+              <div class="font-medium text-sm">Word DOCX 版</div>
+              <div class="text-xs text-slate-500">{{ Math.round(reportData.docx_size_bytes / 1024) }} KB · 商飞标准格式</div>
+            </div>
+            <span class="text-blue-600 text-sm">下载 ↓</span>
+          </div>
+        </a>
+        <div v-if="reportData.docx_status && reportData.docx_status !== 'success'"
+             class="block border border-amber-300 bg-amber-50 rounded-lg p-4">
+          <div class="flex items-center gap-3">
+            <span class="text-3xl">⚠️</span>
+            <div class="flex-1">
+              <div class="font-medium text-sm text-amber-900">DOCX 生成失败</div>
+              <div class="text-xs text-amber-700 mt-1">{{ reportData.docx_error || reportData.docx_status }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 警告提示 -->
+    <div v-if="allWarnings.length" class="mt-4 bg-amber-50 border-l-4 border-amber-400 rounded p-4">
+      <h4 class="text-sm font-medium text-amber-900 mb-2">⚠️ 设计提示</h4>
+      <ul class="space-y-1 text-xs text-amber-800">
+        <li v-for="(w, i) in allWarnings" :key="i" class="flex items-start gap-2">
+          <span>•</span><span>{{ w }}</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- AI 思考过程 (折叠) -->
+    <details v-if="events.length" class="mt-4 bg-white rounded-lg border">
+      <summary class="px-5 py-3 flex items-center gap-2 text-sm">
+        <span>🤖 AI Agent 决策过程</span>
+        <span class="text-xs text-slate-400 ml-auto">{{ events.length }} 条事件</span>
+      </summary>
+      <div class="px-5 pb-3 space-y-1 max-h-96 overflow-y-auto">
+        <div v-for="(e, i) in events" :key="i" :class="['event-line', eventKind(e)]">
+          <span class="text-slate-400">{{ formatTime(e.ts) }}</span>
+          <span class="ml-2">{{ eventLabel(e) }}</span>
+          <span v-if="eventBody(e)" class="ml-2">{{ eventBody(e) }}</span>
+        </div>
+      </div>
+    </details>
+
+    <!-- 原始 JSON (高级用户折叠) -->
+    <details v-if="hasResults" class="mt-2 bg-white rounded-lg border">
+      <summary class="px-5 py-3 text-xs text-slate-500">📦 原始 JSON 数据 (高级)</summary>
+      <pre class="px-5 pb-4 text-xs overflow-x-auto" style="max-height: 400px;">{{ JSON.stringify(toolResults, null, 2) }}</pre>
+    </details>
+
+  </main>
+
+  <footer class="bg-white border-t px-6 py-3 text-center text-xs text-slate-500">
+    L3 端到端 · Three.js 3D 渲染 · 数据可视化输出
+  </footer>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+
+const STAGES = [
+  { tool: 'tool_requirements',     name: '需求处理',     icon: '📋' },
+  { tool: 'tool_aerodynamics',     name: '气动分析',     icon: '🌬️' },
+  { tool: 'tool_optimize',         name: '气动优化',     icon: '🎯' },
+  { tool: 'tool_weights',          name: '结构重量',     icon: '⚖️' },
+  { tool: 'tool_propulsion',       name: '电推进',       icon: '⚡' },
+  { tool: 'tool_generate_report',  name: '报告生成',     icon: '📄' },
+];
+
+// 智能设计流程图: 5 个工具映射到 drawio 中的方案级节点
+// 每个 sub.field 是一个数据路径函数 - 进度时取真实数值显示
+const FLOW_STAGES = [
+  {
+    tool: 'tool_requirements', name: '需求分析',
+    subs: [
+      { label: '客户需求',     field: (r) => r?.data?.aircraft_class ? '已确认' : '' },
+      { label: '机型类别',     field: (r) => r?.data?.aircraft_class },
+      { label: '航程 / 巡航',   field: (r) => r?.data?.mission ? `${r.data.mission.range_km} km` : '' },
+      { label: '总体布置',     field: (r) => r?.data?.geometry ? `翼展 ${r.data.geometry.max_wingspan_m}m` : '' },
+      { label: 'MTOW 估算',    field: (r) => r?.data?.weights_kg ? `${r.data.weights_kg.mtow} kg` : '' },
+    ],
+  },
+  {
+    tool: 'tool_aerodynamics', name: '气动外形',
+    subs: [
+      { label: '升阻力特性',   field: (r) => r?.data?.cruise_point ? `CL=${r.data.cruise_point.CL}` : '' },
+      { label: 'CD0 / CDi',    field: (r) => r?.data?.drag_breakdown ? `CD0=${r.data.drag_breakdown.CD0}` : '' },
+      { label: '巡航 L/D',     field: (r) => r?.data?.cruise_point ? `${r.data.cruise_point.L_over_D}` : '' },
+      { label: '阻力极曲线',   field: (r) => r?.data?.polar_curve ? `${r.data.polar_curve.length} 点` : '' },
+      { label: '攻角扫描',     field: (r) => r?.data?.max_L_D ? `最大 ${r.data.max_L_D}` : '' },
+    ],
+  },
+  {
+    tool: 'tool_optimize', name: '气动优化',
+    subs: [
+      { label: '翼展优化',     field: (r) => r?.data?.optimum ? `b=${r.data.optimum.wingspan_m}m` : '' },
+      { label: '展弦比优化',   field: (r) => r?.data?.optimum ? `AR=${r.data.optimum.aspect_ratio}` : '' },
+      { label: 'Grid Search',  field: (r) => r?.data?.n_evaluations ? `${r.data.n_evaluations} 次评估` : '' },
+      { label: '配平校验',     field: (r) => r?.data?.optimum ? `S=${r.data.optimum.wing_area_m2}m²` : '' },
+      { label: 'L/D 提升',     field: (r) => r?.data?.improvement_pct !== undefined ? `+${r.data.improvement_pct}%` : '' },
+    ],
+  },
+  {
+    tool: 'tool_weights', name: '结构强度',
+    subs: [
+      { label: '机翼重量',     field: (r) => r?.data?.structure_kg?.wing ? `${r.data.structure_kg.wing} kg` : '' },
+      { label: '机身重量',     field: (r) => r?.data?.structure_kg?.fuselage ? `${r.data.structure_kg.fuselage} kg` : '' },
+      { label: '尾翼/起落架',  field: (r) => r?.data?.structure_kg ? `${r.data.structure_kg.landing_gear} kg` : '' },
+      { label: '系统/航电',    field: (r) => r?.data?.systems_kg?.subtotal ? `${r.data.systems_kg.subtotal} kg` : '' },
+      { label: '重量收敛',     field: (r) => r?.data?.summary_kg ? `${r.data.summary_kg.delta_pct}%` : '' },
+    ],
+  },
+  {
+    tool: 'tool_propulsion', name: '电推进',
+    subs: [
+      { label: '电机匹配',     field: (r) => r?.data?.propulsion?.cruise_power_kw ? `${r.data.propulsion.cruise_power_kw} kW` : '' },
+      { label: '巡航功率',     field: (r) => r?.data?.propulsion?.efficiency_chain ? `η=${r.data.propulsion.efficiency_chain.total}` : '' },
+      { label: '能耗估算',     field: (r) => r?.data?.propulsion?.energy_consumption_wh_per_km ? `${r.data.propulsion.energy_consumption_wh_per_km} Wh/km` : '' },
+      { label: '续航分析',     field: (r) => r?.data?.estimated_range_km ? `${r.data.estimated_range_km} km` : '' },
+      { label: '任务剖面',     field: (r) => r?.data?.mission_profile ? `${r.data.mission_profile.length} 段` : '' },
+    ],
+  },
+];
+
+// ─── 原图流程图坐标 ───
+// 背景图 flow_chart.jpg 是 4483×2400 的 CE-25A 设计架构图
+// 5 个高亮区块对应 5 个工具映射的图上区域 (像素坐标, 不准时调下面数字即可)
+const FLOW_W = 4483;
+const FLOW_H = 2400;
+const FLOW_HIGHLIGHTS = [
+  // 需求分析方案 (中部)
+  { tool: 'tool_requirements', x: 1880, y: 815,  w: 870,  h: 220 },
+  // 气动外形方案 - 气动设计优化 (左中上)
+  { tool: 'tool_optimize',     x: 595,  y: 690,  w: 1290, h: 285 },
+  // 气动外形方案 - 气动特性分析 (左中下)
+  { tool: 'tool_aerodynamics', x: 880,  y: 1070, w: 1010, h: 410 },
+  // 结构强度设计方案 (中下)
+  { tool: 'tool_weights',      x: 1240, y: 1290, w: 1660, h: 720 },
+  // 系统设计方案 - 能源动力系统 (右中)
+  { tool: 'tool_propulsion',   x: 3690, y: 720,  w: 800,  h: 590 },
+  // 报告生成 → 映射到 "试飞方案生成" 框 (左上)
+  { tool: 'tool_generate_report', x: 380,  y: 20,   w: 1340, h: 580 },
+];
+
+createApp({
+  setup() {
+    // ─── 表单 ───
+    const form = reactive({
+      aircraft_class: 'electric-regional',
+      seats: 19, range_km: 500, cruise_mach: 0.35, cruise_alt_m: 3000,
+      max_wingspan_m: 17, battery_kwh: 250, report_type: 'design', extra: '',
+    });
+
+    // ─── 状态 ───
+    const health = reactive({ redis_ok: false, skill_md_loaded: false, skill_md_chars: 0, model: '' });
+    const runId  = ref(null);
+    const events = ref([]);
+    const stageStates = reactive({});
+    const toolResults = reactive({});
+    const finalStatus = ref(null);
+    const planLoading = ref(false);
+
+    let eventSource = null;
+
+    // ─── computed: 各工具结果 ───
+    const reqResult  = computed(() => toolResults.tool_requirements);
+    const aerResult  = computed(() => toolResults.tool_aerodynamics);
+    const optResult  = computed(() => toolResults.tool_optimize);
+    const wtsResult  = computed(() => toolResults.tool_weights);
+    const propResult = computed(() => toolResults.tool_propulsion);
+    const reportResult = computed(() => toolResults.tool_generate_report);
+    const reportData   = computed(() => reportResult.value?.data || {});
+
+    function reportFileUrl(filename) {
+      if (!runId.value) return '#';
+      return `/api/design/${runId.value}/file?name=${encodeURIComponent(filename)}`;
+    }
+
+    const hasResults = computed(() => Object.keys(toolResults).length > 0);
+
+    // ─── computed: 数据快捷访问 ───
+    const geomData = computed(() => reqResult.value?.data?.geometry || {});
+    const missData = computed(() => reqResult.value?.data?.mission || {});
+    const aerData  = computed(() => aerResult.value?.data || {});
+    const optData  = computed(() => optResult.value?.data || {});
+    const wtsData  = computed(() => wtsResult.value?.data || {});
+    const propData = computed(() => propResult.value?.data || {});
+
+    // ─── KPI 卡 ───
+    const kpiMTOW = computed(() => {
+      const v = wtsData.value?.summary_kg?.takeoff_calc || reqResult.value?.data?.weights_kg?.mtow;
+      return v ? Math.round(v).toLocaleString() : '—';
+    });
+    const kpiLD = computed(() => {
+      const v = optData.value?.optimum?.L_over_D || aerData.value?.cruise_point?.L_over_D;
+      return v ? v.toFixed(1) : '—';
+    });
+    const kpiRange = computed(() => {
+      const v = propData.value?.estimated_range_km;
+      return v ? Math.round(v).toLocaleString() : '—';
+    });
+    const kpiPower = computed(() => {
+      const v = propData.value?.propulsion?.cruise_power_kw;
+      return v ? Math.round(v) : '—';
+    });
+
+    // ─── 设计快照 ───
+    const designSnapshot = computed(() => {
+      return `${form.aircraft_class} · ${form.seats}座 · ${form.range_km}km · 翼展${form.max_wingspan_m}m`;
+    });
+
+    // ─── 阻力极曲线 SVG ───
+    const polarSvg = computed(() => {
+      const polar = aerData.value?.polar_curve || [];
+      if (!polar.length) return { viewBox: '0 0 100 100', points: '', dots: [] };
+      const cds = polar.map(p => p.CD), cls = polar.map(p => p.CL);
+      const cdMin = Math.min(...cds), cdMax = Math.max(...cds);
+      const clMin = Math.min(...cls), clMax = Math.max(...cls);
+      const w = 100, h = 100, padX = 5, padY = 5;
+      const sx = (cd) => padX + (cd - cdMin) / (cdMax - cdMin || 1) * (w - 2*padX);
+      const sy = (cl) => h - padY - (cl - clMin) / (clMax - clMin || 1) * (h - 2*padY);
+      const points = polar.map(p => `${sx(p.CD).toFixed(1)},${sy(p.CL).toFixed(1)}`).join(' ');
+      const dots = polar.map(p => ({ label: p.alpha_deg, x: sx(p.CD), y: sy(p.CL) }));
+      return { viewBox: `0 0 ${w} ${h}`, points, dots };
+    });
+
+    // ─── 重量饼图 ───
+    const pieSegments = computed(() => {
+      const w = wtsData.value;
+      if (!w) return [];
+      const items = [
+        { label: '机翼',     value: w.structure_kg?.wing,         color: '#3b82f6' },
+        { label: '机身',     value: w.structure_kg?.fuselage,     color: '#06b6d4' },
+        { label: '尾翼',     value: (w.structure_kg?.h_tail || 0) + (w.structure_kg?.v_tail || 0), color: '#10b981' },
+        { label: '起落架',   value: w.structure_kg?.landing_gear, color: '#f59e0b' },
+        { label: '系统',     value: w.systems_kg?.subtotal,       color: '#a78bfa' },
+        { label: '推进系统', value: w.propulsion_kg?.subtotal,    color: '#ef4444' },
+        { label: '载荷+电池', value: (w.summary_kg?.payload || 0) + (w.summary_kg?.fuel_or_battery || 0), color: '#94a3b8' },
+      ].filter(x => x.value && x.value > 0);
+
+      const total = items.reduce((s, x) => s + x.value, 0);
+      let angle = -Math.PI / 2;   // 从顶部开始
+      const cx = 50, cy = 50, r = 40;
+      return items.map(it => {
+        const slice = (it.value / total) * Math.PI * 2;
+        const x1 = cx + Math.cos(angle) * r;
+        const y1 = cy + Math.sin(angle) * r;
+        angle += slice;
+        const x2 = cx + Math.cos(angle) * r;
+        const y2 = cy + Math.sin(angle) * r;
+        const large = slice > Math.PI ? 1 : 0;
+        const path = `M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${large} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z`;
+        return { ...it, path, pct: (it.value / total) * 100 };
+      });
+    });
+
+    // ─── 任务剖面 ───
+    const missionSegments = computed(() => {
+      const profile = propData.value?.mission_profile || [];
+      if (!profile.length) return [];
+      const totalT = profile.reduce((s, p) => s + (p.duration_min || 0), 0) || 1;
+      return profile.map(p => ({ ...p, pct: (p.duration_min / totalT) * 100 }));
+    });
+
+    function stageNameZh(s) {
+      return ({ climb: '爬升', cruise: '巡航', descent: '下降' })[s] || s;
+    }
+
+    // ─── 警告汇总 ───
+    const allWarnings = computed(() => {
+      const ws = [];
+      for (const r of Object.values(toolResults)) {
+        const list = r?.data?.warnings || [];
+        for (const w of list) ws.push(w);
+      }
+      return ws;
+    });
+
+    // ─── 进度条 ───
+    function stageClass(tool) { return 'stage-' + (stageStates[tool] || 'pending'); }
+    function stageIcon(tool) {
+      const s = stageStates[tool];
+      if (s === 'running') return '⏳';
+      if (s === 'done')    return '✓';
+      if (s === 'error')   return '✗';
+      return STAGES.find(x => x.tool === tool)?.icon || '·';
+    }
+
+    const stages = STAGES;
+    const flowStages = FLOW_STAGES;
+    const doneCount = computed(() =>
+      FLOW_STAGES.filter(s => stageStates[s.tool] === 'done').length
+    );
+
+    // ─── 流程图样式函数 ───
+    function stageBoxFill(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '#dcfce7';
+      if (s === 'running') return '#dbeafe';
+      if (s === 'error')   return '#fef2f2';
+      return '#f8fafc';
+    }
+    function stageBoxStroke(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '#16a34a';
+      if (s === 'running') return '#3b82f6';
+      if (s === 'error')   return '#dc2626';
+      return '#cbd5e1';
+    }
+    function stageTextColor(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '#15803d';
+      if (s === 'running') return '#1d4ed8';
+      if (s === 'error')   return '#b91c1c';
+      return '#94a3b8';
+    }
+    function stageBoxLabel(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '✓';
+      if (s === 'running') return '⏳';
+      if (s === 'error')   return '✗';
+      return '○';
+    }
+    function stageBadge(tool) {
+      const s = stageStates[tool];
+      const r = toolResults[tool];
+      if (s === 'done' && r)    return `${r.elapsed_s || 0}s · 已完成`;
+      if (s === 'running')      return '正在执行...';
+      if (s === 'error')        return '执行失败';
+      return '待执行';
+    }
+
+    // 子项状态: 大块 done → 子项全 done; running → 第一个 running, 其他 pending
+    function subItemFill(tool, j) {
+      const s = stageStates[tool];
+      if (s === 'done')                     return '#ffffff';
+      if (s === 'running' && j === 0)       return '#eff6ff';
+      if (s === 'error')                    return '#ffffff';
+      return '#f8fafc';
+    }
+    function subItemStroke(tool, j) {
+      const s = stageStates[tool];
+      if (s === 'done')                     return '#86efac';
+      if (s === 'running' && j === 0)       return '#3b82f6';
+      if (s === 'running')                  return '#cbd5e1';
+      if (s === 'error')                    return '#fca5a5';
+      return '#cbd5e1';
+    }
+    function subItemTextColor(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '#15803d';
+      if (s === 'running') return '#1d4ed8';
+      if (s === 'error')   return '#b91c1c';
+      return '#94a3b8';
+    }
+    function subItemValue(tool, sub) {
+      // 工具完成后, 用真实数据填充每个子项
+      if (stageStates[tool] !== 'done') return '';
+      const r = toolResults[tool];
+      try { return sub.field(r) || ''; }
+      catch (e) { return ''; }
+    }
+
+    function arrowColor(i) {
+      // i = 0..3 (4 个箭头, 第 i 个连接 stage[i] → stage[i+1])
+      const fromTool = FLOW_STAGES[i].tool;
+      const s = stageStates[fromTool];
+      if (s === 'done')    return '#16a34a';
+      if (s === 'running') return '#3b82f6';
+      return '#cbd5e1';
+    }
+    function arrowMarker(i) {
+      const s = stageStates[FLOW_STAGES[i].tool];
+      if (s === 'done')    return 'flow-arr-done';
+      if (s === 'running') return 'flow-arr-run';
+      return 'flow-arr-pend';
+    }
+
+    // ════════════════════════════════════════════════════
+    // 原图流程图: 缩放/拖动/高亮
+    // ════════════════════════════════════════════════════
+    const flowHighlights = FLOW_HIGHLIGHTS;
+    const flowZoom = ref(0.18);          // 默认 18% (整张图能塞进容器)
+    const flowContainer = ref(null);
+    const flowDrag = reactive({ on: false, sx: 0, sy: 0, l: 0, t: 0 });
+
+    function flowZoomIn()  { flowZoom.value = Math.min(flowZoom.value * 1.25, 1.5); }
+    function flowZoomOut() { flowZoom.value = Math.max(flowZoom.value / 1.25, 0.05); }
+    function flowZoom100() { flowZoom.value = 1; }
+    function flowZoomFit() {
+      // 适配容器: 宽高都能塞下整张图
+      if (!flowContainer.value) return;
+      const w = flowContainer.value.clientWidth  - 24;
+      const h = flowContainer.value.clientHeight - 24;
+      const zoomW = w / FLOW_W;
+      const zoomH = h / FLOW_H;
+      flowZoom.value = Math.max(0.04, Math.min(zoomW, zoomH));
+      // 滚动条复位到左上角
+      nextTick(() => {
+        if (flowContainer.value) {
+          flowContainer.value.scrollLeft = 0;
+          flowContainer.value.scrollTop  = 0;
+        }
+      });
+    }
+    function flowWheel(e) {
+      // 鼠标滚轮缩放 (以鼠标位置为锚点)
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      flowZoom.value = Math.max(0.05, Math.min(1.5, flowZoom.value * factor));
+    }
+    function flowDragStart(e) {
+      flowDrag.on = true;
+      flowDrag.sx = e.clientX;
+      flowDrag.sy = e.clientY;
+      if (flowContainer.value) {
+        flowDrag.l = flowContainer.value.scrollLeft;
+        flowDrag.t = flowContainer.value.scrollTop;
+        flowContainer.value.style.cursor = 'grabbing';
+      }
+    }
+    function flowDragMove(e) {
+      if (!flowDrag.on || !flowContainer.value) return;
+      flowContainer.value.scrollLeft = flowDrag.l - (e.clientX - flowDrag.sx);
+      flowContainer.value.scrollTop  = flowDrag.t - (e.clientY - flowDrag.sy);
+    }
+    function flowDragEnd() {
+      flowDrag.on = false;
+      if (flowContainer.value) flowContainer.value.style.cursor = 'grab';
+    }
+
+    function hlBorderColor(tool) {
+      const s = stageStates[tool];
+      if (s === 'done')    return '#16a34a';
+      if (s === 'running') return '#3b82f6';
+      if (s === 'error')   return '#dc2626';
+      return '#94a3b8';
+    }
+    function hlBadgeText(tool) {
+      const s = stageStates[tool];
+      const r = toolResults[tool];
+      const stage = STAGES.find(x => x.tool === tool);
+      const toolName = stage ? `${stage.icon} ${stage.name}` : tool;
+      if (s === 'done')    return `${toolName} ✓`;
+      if (s === 'running') return `${toolName} ⏳`;
+      if (s === 'error')   return `${toolName} ✗`;
+      return '';
+    }
+    const skillStatus = computed(() => health.skill_md_loaded
+      ? (health.skill_md_chars / 1000).toFixed(1) + 'k 知识' : '无知识');
+    const skillBadge = computed(() => health.skill_md_loaded
+      ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700');
+    const redisBadge = computed(() => health.redis_ok
+      ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700');
+
+    // ─── 事件流(精简) ───
+    function eventKind(e) {
+      if (e.kind?.includes('error')) return 'error';
+      if (e.kind?.includes('finish')) return 'finish';
+      if (e.kind?.startsWith('tool_')) return 'tool';
+      return '';
+    }
+    function eventLabel(e) {
+      return ({
+        pipeline_start: '🏁 开始', agent_thinking: '🤔 思考',
+        agent_decision: '🎯 决策', tool_start: '▶ 开始',
+        tool_done: '✓ 完成', tool_error: '✗ 失败',
+        pipeline_finish: '🎉 完成', pipeline_error: '❌ 出错',
+      })[e.kind] || e.kind;
+    }
+    function eventBody(e) {
+      const p = e.payload || {};
+      if (e.kind === 'agent_decision') {
+        return p.action === 'tool_call' ? `→ ${p.tool}` : '结束流程';
+      }
+      if (e.kind === 'tool_start') return p.tool;
+      if (e.kind === 'tool_done')  return `${p.tool} (${p.elapsed}s)`;
+      return '';
+    }
+    function formatTime(ts) {
+      return new Date(ts * 1000).toTimeString().slice(0, 8);
+    }
+
+    function fmt(v, digits) {
+      if (v === undefined || v === null || isNaN(v)) return '—';
+      return Number(v).toFixed(digits);
+    }
+
+    // ════════════════════════════════════════════════
+    // 对话式输入 (Tab 2)
+    // ════════════════════════════════════════════════
+    const inputTab = ref('form');     // 'form' | 'chat'
+    const chat = reactive({
+      messages: [],                   // [{role: 'user'/'assistant', content: '...'}]
+      input: '',
+      loading: false,
+      extracted: {},                  // 已提取的参数
+      missing: [],
+      is_ready: false,
+      recording: false,
+    });
+    const chatMessages = ref(null);   // 滚动到底部用
+
+    const chatFieldLabels = {
+      aircraft_class:  '飞机类型',
+      seats:           '座位数',
+      range_km:        '航程 (km)',
+      cruise_mach:     '巡航马赫',
+      cruise_alt_m:    '巡航高度 (m)',
+      max_wingspan_m:  '最大翼展 (m)',
+      battery_kwh:     '电池 (kWh)',
+    };
+
+    async function sendChatMessage() {
+      const text = chat.input.trim();
+      if (!text || chat.loading) return;
+
+      chat.messages.push({ role: 'user', content: text });
+      chat.input = '';
+      chat.loading = true;
+      scrollChatToBottom();
+
+      try {
+        const resp = await fetch('/api/chat/turn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: chat.messages.map(m => ({ role: m.role, content: m.content })) }),
+        });
+        if (resp.status === 401) { location.href = '/login'; return; }
+        if (!resp.ok) {
+          chat.messages.push({ role: 'assistant', content: '(对话出错: HTTP ' + resp.status + ')' });
+          return;
+        }
+        const data = await resp.json();
+        chat.messages.push({ role: 'assistant', content: data.reply || '(无回复)' });
+        chat.extracted = data.extracted_params || {};
+        chat.missing   = data.missing_fields  || [];
+        chat.is_ready  = !!data.is_ready;
+      } catch (e) {
+        chat.messages.push({ role: 'assistant', content: '(网络错误: ' + e.message + ')' });
+      } finally {
+        chat.loading = false;
+        scrollChatToBottom();
+      }
+    }
+
+    function scrollChatToBottom() {
+      nextTick(() => {
+        if (chatMessages.value) {
+          chatMessages.value.scrollTop = chatMessages.value.scrollHeight;
+        }
+      });
+    }
+
+    function resetChat() {
+      if (!confirm('确定重新开始对话吗? 已收集的参数会清空。')) return;
+      chat.messages = [];
+      chat.extracted = {};
+      chat.missing = [];
+      chat.is_ready = false;
+      chat.input = '';
+    }
+
+    async function startDesignFromChat() {
+      // 把 extracted 填到 form 里, 然后启动设计
+      Object.assign(form, chat.extracted);
+      await startDesign();
+    }
+
+    // ─── 语音输入 (Web Speech API) ───
+    const speechSupported = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+    let recognizer = null;
+
+    function startVoiceInput() {
+      if (!speechSupported) {
+        alert('当前浏览器不支持语音输入。请用 Chrome / Edge。\n注意: 麦克风功能需要 HTTPS 或 localhost。');
+        return;
+      }
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognizer = new SpeechRec();
+      recognizer.lang = 'zh-CN';
+      recognizer.interimResults = true;     // 边说边显示
+      recognizer.continuous = false;
+
+      let finalText = '';
+      recognizer.onstart = () => {
+        chat.recording = true;
+        chat.input = '';
+      };
+      recognizer.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) {
+            finalText += e.results[i][0].transcript;
+          } else {
+            interim += e.results[i][0].transcript;
+          }
+        }
+        chat.input = finalText + interim;
+      };
+      recognizer.onerror = (e) => {
+        chat.recording = false;
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          alert('麦克风权限被拒绝。请在地址栏点 🔒 → 允许麦克风。\n\n如果用 HTTP 访问, Chrome 会限制麦克风, 需要 HTTPS 或 localhost。');
+        } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          alert('语音识别错误: ' + e.error);
+        }
+      };
+      recognizer.onend = () => {
+        chat.recording = false;
+      };
+
+      try {
+        recognizer.start();
+      } catch (e) {
+        chat.recording = false;
+        alert('启动失败: ' + e.message);
+      }
+    }
+
+    function stopVoiceInput() {
+      if (recognizer) recognizer.stop();
+      chat.recording = false;
+    }
+
+    // ─── 启动设计 ───
+    async function startDesign() {
+      planLoading.value = true;
+      events.value = [];
+      Object.keys(stageStates).forEach(k => delete stageStates[k]);
+      Object.keys(toolResults).forEach(k => delete toolResults[k]);
+      finalStatus.value = null;
+      // 清掉上一次的 3D 模型, 等本次需求处理完成再画
+      if (aircraftGroup) {
+        scene.remove(aircraftGroup);
+        aircraftGroup.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        aircraftGroup = null;
+      }
+      aircraftReady.value = false;
+
+      try {
+        const resp = await fetch('/api/design/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(form),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || '启动失败');
+        runId.value = data.run_id;
+        subscribeEvents(data.run_id);
+      } catch (e) {
+        alert('错误: ' + e.message);
+        planLoading.value = false;
+      }
+    }
+
+    function subscribeEvents(rid) {
+      if (eventSource) eventSource.close();
+      eventSource = new EventSource(`/api/design/${rid}/stream`);
+
+      eventSource.onmessage = (msg) => {
+        const e = JSON.parse(msg.data);
+
+        if (e.kind === '__end__') {
+          eventSource.close();
+          loadResult(rid);
+          planLoading.value = false;
+          return;
+        }
+
+        events.value.push(e);
+        const p = e.payload || {};
+        if (e.kind === 'tool_start')  stageStates[p.tool] = 'running';
+        if (e.kind === 'tool_done')   stageStates[p.tool] = p.status === 'success' ? 'done' : 'error';
+        if (e.kind === 'tool_error')  stageStates[p.tool] = 'error';
+      };
+
+      eventSource.onerror = () => {
+        eventSource.close();
+        setTimeout(() => subscribeEvents(rid), 1000);
+      };
+    }
+
+    async function loadResult(rid) {
+      try {
+        const resp = await fetch(`/api/design/${rid}/result`);
+        const data = await resp.json();
+        finalStatus.value = data.run.status;
+        Object.assign(toolResults, data.tool_results || {});
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function resetAll() {
+      runId.value = null;
+      events.value = [];
+      Object.keys(stageStates).forEach(k => delete stageStates[k]);
+      Object.keys(toolResults).forEach(k => delete toolResults[k]);
+      finalStatus.value = null;
+      // 清空 3D 视窗
+      if (aircraftGroup) {
+        scene.remove(aircraftGroup);
+        aircraftGroup.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+        aircraftGroup = null;
+      }
+      aircraftReady.value = false;
+      autoRotateOn.value = false;
+      if (controls) controls.autoRotate = false;
+    }
+
+    // ════════════════════════════════════════════════════
+    // 3D 飞机渲染 (Three.js)
+    // ════════════════════════════════════════════════════
+    const aircraftReady = ref(false);
+    const autoRotateOn = ref(false);
+    function toggleAutoRotate() {
+      autoRotateOn.value = !autoRotateOn.value;
+      if (controls) controls.autoRotate = autoRotateOn.value;
+    }
+    const aircraftDisplay = computed(() => {
+      const g = geomData.value;
+      const m = missData.value;
+      // 估算机身长度: 鼻段 3m + 客舱 (座位/4 * 0.81m) + 尾段 4m
+      const fuseLen = (3 + (m.seats || 19) / 4 * 0.81 + 4).toFixed(1);
+      return {
+        wingspan: g.max_wingspan_m?.toFixed(1) || '—',
+        fuse_length: fuseLen,
+      };
+    });
+
+    let scene, camera, renderer, controls, aircraftGroup;
+
+    function init3D() {
+      const container = document.getElementById('viewer-3d');
+      if (!container || typeof THREE === 'undefined') return;
+
+      const W = container.clientWidth, H = container.clientHeight;
+
+      scene = new THREE.Scene();
+
+      camera = new THREE.PerspectiveCamera(40, W / H, 0.1, 1000);
+      camera.position.set(25, 12, 25);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(W, H);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(renderer.domElement);
+
+      // 灯光
+      const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambient);
+      const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+      sun.position.set(20, 30, 10);
+      scene.add(sun);
+      const fill = new THREE.DirectionalLight(0x88aaff, 0.3);
+      fill.position.set(-10, 5, -10);
+      scene.add(fill);
+
+      // 控件
+      if (THREE.OrbitControls) {
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI * 0.49;   // 不让相机翻到地下
+        controls.minDistance = 8;
+        controls.maxDistance = 100;
+        // 默认不自动旋转, 但留一个口子
+        controls.autoRotate = false;
+        controls.autoRotateSpeed = 0.6;
+      }
+
+      // 地面网格 (示意尺度)
+      const grid = new THREE.GridHelper(60, 30, 0xcbd5e1, 0xe2e8f0);
+      grid.position.y = -2;
+      scene.add(grid);
+
+      // 不再加载默认飞机 - 等用户启动 AI 设计后, watch(reqResult) 触发渲染
+      // buildDefaultAircraft();
+
+      // 渲染循环
+      function animate() {
+        requestAnimationFrame(animate);
+        if (controls) controls.update();
+        if (aircraftGroup) {
+          // 螺旋桨旋转
+          aircraftGroup.userData.propellers?.forEach(p => { p.rotation.x += 0.5; });
+        }
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // 窗口尺寸变化
+      window.addEventListener('resize', () => {
+        const W = container.clientWidth, H = container.clientHeight;
+        camera.aspect = W / H;
+        camera.updateProjectionMatrix();
+        renderer.setSize(W, H);
+      });
+    }
+
+    function buildDefaultAircraft() {
+      buildAircraft({
+        wingspan: 17, wing_area: 28, aspect_ratio: 10,
+        fuse_length: 18, fuse_diameter: 2.1, is_electric: true,
+      });
+    }
+
+    function buildAircraft(p) {
+      // ════════════════════════════════════════════════════════
+      // 坐标系约定 (Three.js 右手系):
+      //   +X = 机头方向 (机身轴)
+      //   +Y = 向上
+      //   +Z = 右翼方向 (-Z = 左翼)
+      // 所有几何都在这个系下构造, 一律不再用 rotation 来"修正"方向。
+      // ════════════════════════════════════════════════════════
+
+      // 移除旧飞机
+      if (aircraftGroup) {
+        scene.remove(aircraftGroup);
+        aircraftGroup.traverse(obj => {
+          if (obj.geometry) obj.geometry.dispose();
+          if (obj.material) obj.material.dispose();
+        });
+      }
+      aircraftGroup = new THREE.Group();
+      aircraftGroup.userData.propellers = [];
+
+      // ── 材质 ──
+      const matFuse = new THREE.MeshLambertMaterial({ color: 0xe2e8f0 });
+      const matWing = new THREE.MeshLambertMaterial({ color: 0x3b82f6 });
+      const matTail = new THREE.MeshLambertMaterial({ color: 0x2563eb });
+      const matNac  = new THREE.MeshLambertMaterial({ color: 0x475569 });
+      const matProp = new THREE.MeshLambertMaterial({ color: 0x1e293b });
+
+      // ── 几何参数 ──
+      const fuseLen  = p.fuse_length;
+      const fuseDia  = p.fuse_diameter;
+      const halfSpan = p.wingspan / 2;
+      const taper    = 0.5;
+      const rootChord = 2 * p.wing_area / (p.wingspan * (1 + taper));
+      const tipChord  = rootChord * taper;
+
+      // ════════════════════════════════════════════════════════
+      // 1. 机身 - 用拉长的椭球, 沿 X 轴
+      // ════════════════════════════════════════════════════════
+      const fuseGeom = new THREE.SphereGeometry(fuseDia / 2, 24, 16);
+      fuseGeom.scale(fuseLen / fuseDia, 1, 1);     // 沿 X 轴拉长
+      const fuse = new THREE.Mesh(fuseGeom, matFuse);
+      aircraftGroup.add(fuse);
+
+      // ════════════════════════════════════════════════════════
+      // 2. 主翼 - 用 Shape (X=弦长, Y=翼展), 然后旋转到 (X, Z) 平面
+      //    旋转后: X→X (弦长), Y→Z (翼展), Z→-Y (厚度向下)
+      // ════════════════════════════════════════════════════════
+      function makeWingHalf(rootC, tipC, span, sweepBack, depth, mat) {
+        // Shape 在 XY 平面: X=弦长方向(后缘+/前缘-), Y=翼展(0→span)
+        const sh = new THREE.Shape();
+        sh.moveTo( rootC / 2, 0);                    // 翼根后缘
+        sh.lineTo( tipC / 2 + sweepBack, span);      // 翼尖后缘
+        sh.lineTo(-tipC / 2 + sweepBack, span);      // 翼尖前缘
+        sh.lineTo(-rootC / 2, 0);                    // 翼根前缘
+        sh.closePath();
+        const geom = new THREE.ExtrudeGeometry(sh, { depth: depth, bevelEnabled: false });
+        geom.translate(0, 0, -depth / 2);            // 厚度居中
+        // 关键旋转: 让 Shape 的 Y(翼展) 变成世界的 Z(右翼方向)
+        geom.rotateX(-Math.PI / 2);
+        // 旋转后: X 不变, 原Y→+Z(右翼方向), 原Z→-Y
+        return new THREE.Mesh(geom, mat);
+      }
+
+      // 右翼: 从 Z=0 向 +Z 展开 halfSpan
+      const wingRight = makeWingHalf(rootChord, tipChord, halfSpan, halfSpan * 0.05, 0.18, matWing);
+      wingRight.position.y = fuseDia * 0.15;         // 略微低于机身中线 (低翼布局)
+      aircraftGroup.add(wingRight);
+
+      // 左翼: 镜像到 -Z
+      const wingLeft = wingRight.clone();
+      wingLeft.scale.z = -1;
+      aircraftGroup.add(wingLeft);
+
+      // ════════════════════════════════════════════════════════
+      // 3. 平尾 - 同样的方法, 较小, 放在尾部
+      // ════════════════════════════════════════════════════════
+      const htailHalfSpan = halfSpan * 0.4;
+      const htailRoot     = rootChord * 0.55;
+      const htailTip      = htailRoot * 0.5;
+      const htailX        = -fuseLen / 2 + 1.5;       // 尾部位置
+
+      const htailRight = makeWingHalf(htailRoot, htailTip, htailHalfSpan,
+                                      htailHalfSpan * 0.15, 0.12, matTail);
+      htailRight.position.set(htailX, fuseDia * 0.4, 0);
+      aircraftGroup.add(htailRight);
+
+      const htailLeft = htailRight.clone();
+      htailLeft.scale.z = -1;
+      aircraftGroup.add(htailLeft);
+
+      // ════════════════════════════════════════════════════════
+      // 4. 垂尾 - Shape 在 XY 平面, X=弦长, Y=高度. 直接保留 (不需要旋转!)
+      //    厚度沿 Z (深度方向, 极薄), 这样它就是垂直安定面
+      // ════════════════════════════════════════════════════════
+      const vtailHeight = fuseDia * 1.6;
+      const vtailRoot   = rootChord * 0.7;
+      const vtailTip    = vtailRoot * 0.45;
+      const vsweep      = vtailHeight * 0.3;          // 后掠
+
+      const vtailShape = new THREE.Shape();
+      vtailShape.moveTo( vtailRoot / 2,         0);             // 后缘根部
+      vtailShape.lineTo( vtailTip / 2 - vsweep, vtailHeight);   // 后缘尖部 (后掠)
+      vtailShape.lineTo(-vtailTip / 2 - vsweep, vtailHeight);   // 前缘尖部
+      vtailShape.lineTo(-vtailRoot / 2,         0);             // 前缘根部
+      vtailShape.closePath();
+      const vtailGeom = new THREE.ExtrudeGeometry(vtailShape, { depth: 0.12, bevelEnabled: false });
+      vtailGeom.translate(0, 0, -0.06);   // 厚度居中
+
+      const vtail = new THREE.Mesh(vtailGeom, matTail);
+      vtail.position.set(htailX, fuseDia / 2, 0);     // 在尾部, 从机身上沿往上长
+      aircraftGroup.add(vtail);
+
+      // ════════════════════════════════════════════════════════
+      // 5. 发动机 / 螺旋桨
+      // ════════════════════════════════════════════════════════
+      if (p.is_electric) {
+        // 翼上电机短舱 + 4 叶螺旋桨
+        for (const side of [1, -1]) {
+          const engineX = rootChord * 0.2;            // 翼前一点
+          const engineZ = side * halfSpan * 0.45;
+          const engineY = fuseDia * 0.15 + 0.2;       // 在主翼上方一点
+
+          // 短舱 (沿 X 轴的圆柱)
+          const nacGeom = new THREE.CylinderGeometry(0.32, 0.32, 1.4, 12);
+          nacGeom.rotateZ(Math.PI / 2);               // 圆柱默认沿 Y, 转成沿 X
+          const nac = new THREE.Mesh(nacGeom, matNac);
+          nac.position.set(engineX, engineY, engineZ);
+          aircraftGroup.add(nac);
+
+          // 螺旋桨 (4 叶, 在短舱前) - 桨叶在 YZ 平面 (X 轴是旋转轴)
+          const propGroup = new THREE.Group();
+          for (let i = 0; i < 4; i++) {
+            const blade = new THREE.Mesh(
+              new THREE.BoxGeometry(0.08, 0.18, 1.6),  // X=厚度, Y=宽度, Z=长度
+              matProp,
+            );
+            blade.rotation.x = (i * Math.PI) / 2;     // 4 叶 90 度间隔, 绕 X 轴
+            propGroup.add(blade);
+          }
+          propGroup.position.set(engineX + 0.8, engineY, engineZ);
+          aircraftGroup.add(propGroup);
+          aircraftGroup.userData.propellers.push(propGroup);
+        }
+      } else {
+        // 翼下涡扇
+        for (const side of [1, -1]) {
+          const engineGeom = new THREE.CylinderGeometry(0.55, 0.5, 2.5, 16);
+          engineGeom.rotateZ(Math.PI / 2);
+          const engine = new THREE.Mesh(engineGeom, matNac);
+          engine.position.set(rootChord * 0.1, -fuseDia * 0.4, side * halfSpan * 0.35);
+          aircraftGroup.add(engine);
+        }
+      }
+
+      scene.add(aircraftGroup);
+
+      // ── 自适应相机 ──
+      const maxDim = Math.max(p.wingspan, p.fuse_length);
+      const camDist = maxDim * 1.2;
+      camera.position.set(camDist * 0.65, camDist * 0.45, camDist * 0.65);
+      if (controls) controls.target.set(0, 0, 0);
+
+      aircraftReady.value = true;
+    }
+
+    // 监听 reqResult: 数据来了就重新生成飞机
+    watch(reqResult, (r) => {
+      if (!r || !r.data) return;
+      const g = r.data.geometry, m = r.data.mission;
+      const fuseLen = 3 + (m.seats || 19) / 4 * 0.81 + 4;
+      buildAircraft({
+        wingspan:      g.max_wingspan_m,
+        wing_area:     g.wing_area_m2,
+        aspect_ratio:  g.aspect_ratio,
+        fuse_length:   fuseLen,
+        fuse_diameter: 2.0 + (m.seats || 19) / 100,
+        is_electric:   r.data.is_electric,
+      });
+    });
+
+    // 监听 optResult: 用优化后翼展更新
+    watch(optResult, (r) => {
+      if (!r?.data?.optimum) return;
+      const opt = r.data.optimum;
+      const m = missData.value;
+      const fuseLen = 3 + (m.seats || 19) / 4 * 0.81 + 4;
+      buildAircraft({
+        wingspan:      opt.wingspan_m,
+        wing_area:     opt.wing_area_m2,
+        aspect_ratio:  opt.aspect_ratio,
+        fuse_length:   fuseLen,
+        fuse_diameter: 2.0 + (m.seats || 19) / 100,
+        is_electric:   reqResult.value?.data?.is_electric || false,
+      });
+    });
+
+    onMounted(async () => {
+      try {
+        const resp = await fetch('/api/health');
+        Object.assign(health, await resp.json());
+      } catch (e) {}
+
+      await nextTick();
+
+      // 流程图: 默认适配容器宽度
+      setTimeout(flowZoomFit, 100);
+
+      // 等 Three.js 加载, 最多等 5 秒。OrbitControls 是可选的, 没有也能显示飞机(只是不能拖动)
+      let waited = 0;
+      const tryInit = () => {
+        if (typeof THREE !== 'undefined') {
+          // Three.js 主体已加载, 立刻初始化 (OrbitControls 加载完会自动启用)
+          init3D();
+          return;
+        }
+        waited += 200;
+        if (waited > 5000) {
+          console.error('[3D] Three.js 5 秒内未加载, 放弃 3D 渲染');
+          return;
+        }
+        setTimeout(tryInit, 200);
+      };
+      tryInit();
+    });
+
+    return {
+      form, health, runId, events, planLoading, finalStatus,
+      stages, stageStates, toolResults, hasResults,
+      reqResult, aerResult, optResult, wtsResult, propResult,
+      reportResult, reportData, reportFileUrl,
+      geomData, missData, aerData, optData, wtsData, propData,
+      kpiMTOW, kpiLD, kpiRange, kpiPower,
+      designSnapshot, aircraftReady, aircraftDisplay,
+      autoRotateOn, toggleAutoRotate,
+      polarSvg, pieSegments, missionSegments, allWarnings,
+      stageClass, stageIcon, stageNameZh,
+      flowStages, doneCount,
+      stageBoxFill, stageBoxStroke, stageTextColor, stageBoxLabel, stageBadge,
+      subItemFill, subItemStroke, subItemTextColor, subItemValue,
+      arrowColor, arrowMarker,
+      // 原图流程图
+      flowHighlights, flowZoom, flowContainer,
+      FLOW_W, FLOW_H,
+      flowZoomIn, flowZoomOut, flowZoom100, flowZoomFit,
+      flowWheel, flowDragStart, flowDragMove, flowDragEnd,
+      hlBorderColor, hlBadgeText,
+      Math,
+      eventKind, eventLabel, eventBody, formatTime, fmt,
+      skillStatus, skillBadge, redisBadge,
+      startDesign, resetAll,
+      // 对话式输入
+      inputTab, chat, chatMessages, chatFieldLabels,
+      sendChatMessage, resetChat, startDesignFromChat,
+      speechSupported, startVoiceInput, stopVoiceInput,
+      Object,
+      JSON,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
